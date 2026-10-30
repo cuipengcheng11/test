@@ -1,8 +1,5 @@
-// 努努影院 · 零依赖版（MiraPlayer 远程版）
-// 与原版 nnyy-spider.js 逻辑相同，但没有任何 import：
-// 不引 util/req.js，不引 cheerio，请求用全局 fetch，HTML 用正则解析。
-// 这样远程单文件加载时，不会因为找不到外部模块而 404。
-// key nnyy，站 https://nnyy.in，无账号、无 token。
+import req from '../../util/req.js';
+import { load } from 'cheerio';
 
 const KEY = 'nnyy';
 const NAME = '努努影院';
@@ -37,59 +34,27 @@ function buildUrl(path, query) {
   return HOST + path + (parts.length ? '?' + parts.join('&') : '');
 }
 
-function cleanText(s) {
-  return String(s || '')
-    .replace(/<[^>]*>/g, '')
-    .replace(/&amp;/g, '&')
-    .replace(/&quot;/g, '"')
-    .replace(/&#39;|&apos;/g, "'")
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&nbsp;/g, ' ')
-    .replace(/\s+/g, ' ')
-    .trim();
-}
-
-function attr(tag, name) {
-  const m = String(tag || '').match(new RegExp(name + '\\s*=\\s*["\']([^"\']*)["\']', 'i'));
-  return m ? m[1] : '';
-}
-
-async function fetchText(url) {
-  try {
-    let res;
-    if (typeof AbortController !== 'undefined') {
-      const ctl = new AbortController();
-      const timer = setTimeout(() => { try { ctl.abort(); } catch {} }, 15000);
-      try {
-        res = await fetch(url, {
-          headers: { 'User-Agent': UA, Referer: HOST + '/' },
-          signal: ctl.signal,
-        });
-      } finally {
-        clearTimeout(timer);
-      }
-    } else {
-      res = await fetch(url, { headers: { 'User-Agent': UA, Referer: HOST + '/' } });
-    }
-    return await res.text();
-  } catch {
-    return '';
-  }
-}
-
 async function getHtml(url) {
-  return fetchText(url);
+  const { data } = await req.get(url, {
+    headers: { 'User-Agent': UA, Referer: HOST + '/' },
+    timeout: 15000,
+  });
+  return String(data || '');
 }
 
 async function getJson(url) {
-  const txt = await fetchText(url);
-  if (!txt) return null;
-  try {
-    return JSON.parse(txt);
-  } catch {
-    return null;
+  const { data } = await req.get(url, {
+    headers: { 'User-Agent': UA, Referer: HOST + '/' },
+    timeout: 15000,
+  });
+  if (typeof data === 'string') {
+    try {
+      return JSON.parse(data);
+    } catch {
+      return null;
+    }
   }
+  return data || null;
 }
 
 function bodyOf(reqIn) {
@@ -106,45 +71,19 @@ function filtersOf(reqIn) {
   return body.filters || body.extend || body.ext || body.filter || {};
 }
 
-// 列表页：每个 <li> 里有一个 a.thumbnail，同一 li 里有标题、note、countrie。
 function parseList(html, base) {
+  const $ = load(html);
   const list = [];
-  const liBlocks = String(html || '').match(/<li[\s\S]*?<\/li>/gi) || [];
-  for (const li of liBlocks) {
-    const aTags = li.match(/<a[^>]*>/gi) || [];
-    let href = '';
-    for (const t of aTags) {
-      if (/thumbnail/i.test(t)) {
-        href = attr(t, 'href');
-        break;
-      }
-    }
-    if (!href) continue;
-    const imgTags = li.match(/<img[^>]*>/gi) || [];
-    let pic = '';
-    let alt = '';
-    if (imgTags.length) {
-      pic = attr(imgTags[0], 'data-src') || attr(imgTags[0], 'src');
-      alt = attr(imgTags[0], 'alt');
-    }
-    let title = '';
-    const h2 = li.match(/<h2[\s\S]*?<\/h2>/i);
-    if (h2) {
-      const aInH2 = h2[0].match(/<a[^>]*>([\s\S]*?)<\/a>/i);
-      title = cleanText(aInH2 ? aInH2[1] : h2[0]) || alt;
-    } else {
-      title = alt;
-    }
-    if (!title) continue;
-    let note = '';
-    const noteM = li.match(/class="[^"]*\bnote\b[^"]*"[^>]*>\s*<span[^>]*>([\s\S]*?)<\/span>/i);
-    if (noteM) note = cleanText(noteM[1]);
-    let countrie = '';
-    const counM = li.match(/class="[^"]*\bcountrie\b[^"]*"[^>]*>([\s\S]*?)<\/div>/i);
-    if (counM) {
-      const spans = counM[1].match(/<span[^>]*>([\s\S]*?)<\/span>/gi) || [];
-      countrie = spans.map((s) => cleanText(s)).filter(Boolean).join(' ');
-    }
+  $('a.thumbnail').each((_, a) => {
+    const $a = $(a);
+    const href = $a.attr('href');
+    if (!href) return;
+    const $li = $a.closest('li');
+    const title = ($li.find('h2 a').first().text() || $a.find('img').attr('alt') || '').trim();
+    if (!title) return;
+    const pic = $a.find('img').attr('data-src') || $a.find('img').attr('src') || '';
+    const note = $li.find('.note span').first().text().trim();
+    const countrie = $li.find('.countrie span').map((_, s) => $(s).text().trim()).get().filter(Boolean).join(' ');
     const remarks = [note, countrie].filter(Boolean).join(' ');
     list.push({
       vod_id: href,
@@ -152,7 +91,7 @@ function parseList(html, base) {
       vod_pic: abs(pic, base),
       vod_remarks: remarks,
     });
-  }
+  });
   return list;
 }
 
@@ -253,19 +192,13 @@ function numericIdOf(detailPath) {
   return m ? m[1] : '';
 }
 
-function parseEpisodes(html) {
+function parseEpisodes($) {
   const eps = [];
-  const liBlocks = String(html || '').match(/<li[^>]*>[\s\S]*?<\/li>/gi) || [];
-  for (const li of liBlocks) {
-    const openTag = li.match(/<li[^>]*>/i);
-    if (!openTag) continue;
-    if (!/play-btn/i.test(openTag[0])) continue;
-    const slug = attr(openTag[0], 'ep_slug');
-    if (!slug) continue;
-    const aM = li.match(/<a[^>]*>([\s\S]*?)<\/a>/i);
-    const name = (aM ? cleanText(aM[1]) : '') || slug;
-    eps.push({ slug, name });
-  }
+  $('#eps-ul li.play-btn').each((_, li) => {
+    const slug = $(li).attr('ep_slug');
+    const name = $(li).find('a').first().text().trim() || slug;
+    if (slug) eps.push({ slug, name });
+  });
   // 站内剧集是倒序（ep8 在前），正序返回；电影的 正片/其他 不是 epN，保持原顺序。
   if (eps.length > 1 && eps.every((e) => /^ep\d+$/.test(e.slug))) eps.reverse();
   return eps;
@@ -285,41 +218,26 @@ async function detail(reqIn) {
   for (const id of ids.filter(Boolean)) {
     const detailUrl = abs(id);
     const html = await getHtml(detailUrl);
-    let vodName = '';
-    let year = '';
-    const titleM = html.match(/<h1[^>]*class="[^"]*product-title[^"]*"[^>]*>([\s\S]*?)<\/h1>/i);
-    if (titleM) {
-      const inner = titleM[1];
-      const spanM = inner.match(/<span[^>]*>([\s\S]*?)<\/span>/i);
-      if (spanM) year = cleanText(spanM[1]).replace(/[^0-9]/g, '');
-      vodName = cleanText(inner.replace(/<span[^>]*>[\s\S]*?<\/span>/gi, ''));
-    }
-    let vodPic = '';
-    const imgTags = html.match(/<img[^>]*>/gi) || [];
-    for (const t of imgTags) {
-      if (/detail-img/i.test(t)) {
-        vodPic = abs(attr(t, 'src'), detailUrl);
-        break;
-      }
-    }
+    const $ = load(html);
+    const $title = $('h1.product-title').first();
+    const vodName = $title.clone().children().remove().end().text().trim();
+    const year = ($title.find('span').first().text() || '').replace(/[^0-9]/g, '');
+    const vodPic = abs($('img.detail-img').first().attr('src') || '', detailUrl);
     let director = '';
     let actor = '';
     let typeName = '';
     let area = '';
     let content = '';
-    const excerptBlocks = html.match(/<div[^>]*class="[^"]*product-excerpt[^"]*"[^>]*>([\s\S]*?)<\/div>/gi) || [];
-    for (const block of excerptBlocks) {
-      const text = cleanText(block);
-      const spanM = block.match(/<span[^>]*>([\s\S]*?)<\/span>/i);
-      const value = spanM ? cleanText(spanM[1]) : '';
+    $('.product-excerpt').each((_, el) => {
+      const text = $(el).text().replace(/\s+/g, ' ').trim();
+      const value = $(el).find('span').text().replace(/\s+/g, ' ').trim();
       if (text.startsWith('导演')) director = value;
       else if (text.startsWith('主演')) actor = value;
       else if (text.startsWith('类型')) typeName = value;
       else if (text.startsWith('制片国家')) area = value;
       else if (text.startsWith('剧情简介')) content = value;
-    }
-    void typeName;
-    const episodes = parseEpisodes(html);
+    });
+    const episodes = parseEpisodes($);
     const numericId = numericIdOf(id);
     let vodPlayFrom = '默认';
     let vodPlayUrl = '';
