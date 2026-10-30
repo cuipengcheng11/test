@@ -1,6 +1,39 @@
+var __create = Object.create;
+var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __getProtoOf = Object.getPrototypeOf;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
+var __copyProps = (to, from, except, desc) => {
+  if (from && typeof from === "object" || typeof from === "function") {
+    for (let key of __getOwnPropNames(from))
+      if (!__hasOwnProp.call(to, key) && key !== except)
+        __defProp(to, key, { get: () => from[key], enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable });
+  }
+  return to;
+};
+var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__getProtoOf(mod)) : {}, __copyProps(
+  // If the importer is in node compatibility mode or this is not an ESM
+  // file that has been converted to a CommonJS file using a Babel-
+  // compatible transform (i.e. "__esModule" has not been set), then set
+  // "default" to the CommonJS "module.exports" for node compatibility.
+  isNodeMode || !mod || !mod.__esModule ? __defProp(target, "default", { value: mod, enumerable: true }) : target,
+  mod
+));
+var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
+
 // src3.js
-import http from "node:http";
-import https from "node:https";
+var src3_exports = {};
+__export(src3_exports, {
+  default: () => createSpider
+});
+module.exports = __toCommonJS(src3_exports);
+var import_node_http = __toESM(require("node:http"));
+var import_node_https = __toESM(require("node:https"));
 var KEY = "nnyy";
 var NAME = "\u52AA\u52AA\u5F71\u9662";
 var HOST = "https://nnyy.in";
@@ -35,7 +68,7 @@ function attr(tag, name) {
   return m ? m[1] : "";
 }
 async function fetchText(url) {
-  const lib = String(url).startsWith("https:") ? https : http;
+  const lib = String(url).startsWith("https:") ? import_node_https.default : import_node_http.default;
   return new Promise((resolve) => {
     try {
       const r = lib.get(url, { headers: { "User-Agent": UA, Referer: HOST + "/" }, timeout: 15e3 }, (res) => {
@@ -381,6 +414,59 @@ createSpider.api = async (fastify) => {
   fastify.post("/play", play);
   fastify.post("/search", search);
 };
-export {
-  createSpider as default
-};
+// Node 整包 CJS 兼容 + 服务器启动：
+// 1) require() 直接拿到 createSpider 函数本身（带 meta/api）。
+// 2) 当文件被 node 直接运行（argv[1] 以 index.js 结尾）时，自动起一个
+//    本地 HTTP 服务（默认 3006 端口，CatPawOpen 文档里的端口），
+//    这样播放器里“Node.js 启动”不会因为进程直接退出而报失败。
+//    被当作模块 require/import 时不自动起服务，避免端口冲突。
+module.exports = module.exports.default;
+module.exports.default = module.exports;
+var __nnyyServer = null;
+async function __nnyyStart(port) {
+  if (__nnyyServer) return __nnyyServer;
+  var httpMod = require("http");
+  var spider = module.exports("nnyy", {});
+  var routes = {};
+  await spider.api({ post: function (p, fn) { routes[p] = fn; } });
+  var srv = httpMod.createServer(function (req, res) {
+    var body = "";
+    req.on("data", function (c) { body += c; });
+    req.on("end", async function () {
+      var pathOnly = req.url.split("?")[0];
+      if (pathOnly === "/" || pathOnly === "/ping" || pathOnly === "/health" || pathOnly === "/status") {
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ status: "ok", key: "nnyy", name: "努努影院" }));
+        return;
+      }
+      var fn = routes[pathOnly] || routes["/" + (pathOnly.split("/").pop() || "")];
+      try {
+        var parsed = body ? JSON.parse(body) : {};
+        var out = fn ? await fn({ body: parsed }) : { error: "not found: " + req.url };
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(out));
+      } catch (e) {
+        res.writeHead(500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: String(e && e.message || e) }));
+      }
+    });
+  });
+  var p = port || Number(process.env.PORT) || 3006;
+  await new Promise(function (ok, bad) {
+    srv.once("error", function (e) {
+      if (e && e.code === "EADDRINUSE" && p < 3010) { p += 1; try { srv.listen(p); } catch (e2) { bad(e2); } }
+      else bad(e);
+    });
+    srv.listen(p, ok);
+  });
+  __nnyyServer = srv;
+  return srv;
+}
+function __nnyyStop() {
+  if (__nnyyServer) { try { __nnyyServer.close(); } catch (e) {} __nnyyServer = null; }
+}
+module.exports.start = __nnyyStart;
+module.exports.stop = __nnyyStop;
+if (typeof process !== "undefined" && process.argv && process.argv[1] && /(?:^|[\\/])index\.js$/i.test(process.argv[1]) && process.env.CATVOD_DISABLE_AUTOSTART !== "1" && typeof globalThis.catServerFactory !== "function") {
+  __nnyyStart().catch(function (e) { console.error(e); });
+}
