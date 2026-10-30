@@ -429,7 +429,7 @@ async function __nnyyStart(port) {
   var spider = module.exports("nnyy", {});
   var routes = {};
   await spider.api({ post: function (p, fn) { routes[p] = fn; } });
-  var srv = httpMod.createServer(function (req, res) {
+  var __handler = function (req, res) {
     var body = "";
     req.on("data", function (c) { body += c; });
     req.on("end", async function () {
@@ -450,11 +450,24 @@ async function __nnyyStart(port) {
         res.end(JSON.stringify({ error: String(e && e.message || e) }));
       }
     });
-  });
+  };
+  var __makeServer = function () {
+    var factory = null;
+    if (port && typeof port === "object") factory = port.serverFactory || (port.config && port.config.serverFactory) || null;
+    if (!factory && typeof globalThis.catServerFactory === "function") factory = globalThis.catServerFactory;
+    if (factory) {
+      try {
+        var s = factory(__handler);
+        if (s && typeof s.listen === "function") return s;
+      } catch (e) {}
+    }
+    return httpMod.createServer(__handler);
+  };
   var p = 9988;
   if (typeof port === "number") p = port;
   else if (port && typeof port === "object") p = Number(port.port || port.DEV_HTTP_PORT || (port.config && port.config.port) || process.env.DEV_HTTP_PORT || process.env.PORT) || 9988;
   else p = Number(process.env.DEV_HTTP_PORT || process.env.PORT) || 9988;
+  var __basePort = p;
   // Report address back to host if it provided a message channel (niuer style),
   // best-effort only: a failure here must not fail service startup.
   var __report = async function () {
@@ -478,13 +491,25 @@ async function __nnyyStart(port) {
       console.log("CatVodSpiderios listening on http://127.0.0.1:" + (addr && addr.port || p));
     } catch (e) {}
   };
-  await new Promise(function (ok, bad) {
-    srv.once("error", function (e) {
-      if (e && e.code === "EADDRINUSE" && p < 3010) { p += 1; try { srv.listen(p, "0.0.0.0"); } catch (e2) { bad(e2); } }
-      else bad(e);
-    });
-    srv.listen(p, "0.0.0.0", ok);
-  });
+  var __lastErr = null;
+  var srv = null;
+  for (var __attempt = 0; __attempt <= 10; __attempt++) {
+    p = __basePort + __attempt;
+    srv = __makeServer();
+    try {
+      await new Promise(function (ok, bad) {
+        srv.once("error", bad);
+        srv.listen(p, "0.0.0.0", ok);
+      });
+      __lastErr = null;
+      break;
+    } catch (e) {
+      __lastErr = e;
+      try { srv.close(); } catch (e2) {}
+      if (!e || e.code !== "EADDRINUSE") break;
+    }
+  }
+  if (__lastErr) throw __lastErr;
   __nnyyServer = srv;
   await __report();
   return srv;
@@ -494,6 +519,13 @@ function __nnyyStop() {
 }
 module.exports.start = __nnyyStart;
 module.exports.stop = __nnyyStop;
-if (typeof process !== "undefined" && process.argv && process.argv[1] && /(?:^|[\\/])index\.js$/i.test(process.argv[1]) && process.env.CATVOD_DISABLE_AUTOSTART !== "1" && typeof globalThis.catServerFactory !== "function") {
-  __nnyyStart().catch(function (e) { console.error(e); });
+if (typeof process !== "undefined" && process.env.CATVOD_DISABLE_AUTOSTART !== "1") {
+  if (process.argv && process.argv[1] && /(?:^|[\\/])index\.js$/i.test(process.argv[1])) {
+    __nnyyStart().catch(function (e) { console.error(e); });
+  } else if (typeof globalThis.catServerFactory === "function") {
+    // Host injected a server factory but may never call start(): give the
+    // host a short window to call start() itself first (so its port/config
+    // wins), then start anyway so the service is not silently dead.
+    setTimeout(function () { __nnyyStart().catch(function (e) { console.error(e); }); }, 200);
+  }
 }
