@@ -451,15 +451,42 @@ async function __nnyyStart(port) {
       }
     });
   });
-  var p = port || Number(process.env.PORT) || 3006;
+  var p = 9988;
+  if (typeof port === "number") p = port;
+  else if (port && typeof port === "object") p = Number(port.port || port.DEV_HTTP_PORT || (port.config && port.config.port) || process.env.DEV_HTTP_PORT || process.env.PORT) || 9988;
+  else p = Number(process.env.DEV_HTTP_PORT || process.env.PORT) || 9988;
+  // Report address back to host if it provided a message channel (niuer style),
+  // best-effort only: a failure here must not fail service startup.
+  var __report = async function () {
+    try {
+      var addr = __nnyyServer.address();
+      var info = { status: "ok", key: "nnyy", name: "努努影院", port: addr && addr.port || p, url: "http://127.0.0.1:" + (addr && addr.port || p), dynamic: "js2p://_WEB_" };
+      var mt = (port && typeof port === "object" && typeof port.messageToDart === "function") ? port.messageToDart : (typeof globalThis.messageToDart === "function" ? globalThis.messageToDart : null);
+      if (mt) { try { await mt(info); } catch (e) {} }
+      if (typeof globalThis.catDartServerPort === "function") {
+        try {
+          var dp = globalThis.catDartServerPort();
+          if (dp) {
+            var httpMod2 = require("http");
+            var postData = JSON.stringify({ action: "serverStarted", url: info.url, port: info.port });
+            var pr = httpMod2.request({ host: "127.0.0.1", port: dp, path: "/msg", method: "POST", headers: { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(postData) } }, function () {});
+            pr.on("error", function () {});
+            pr.end(postData);
+          }
+        } catch (e) {}
+      }
+      console.log("CatVodSpiderios listening on http://127.0.0.1:" + (addr && addr.port || p));
+    } catch (e) {}
+  };
   await new Promise(function (ok, bad) {
     srv.once("error", function (e) {
-      if (e && e.code === "EADDRINUSE" && p < 3010) { p += 1; try { srv.listen(p); } catch (e2) { bad(e2); } }
+      if (e && e.code === "EADDRINUSE" && p < 3010) { p += 1; try { srv.listen(p, "0.0.0.0"); } catch (e2) { bad(e2); } }
       else bad(e);
     });
-    srv.listen(p, ok);
+    srv.listen(p, "0.0.0.0", ok);
   });
   __nnyyServer = srv;
+  await __report();
   return srv;
 }
 function __nnyyStop() {
